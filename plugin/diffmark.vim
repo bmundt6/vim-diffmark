@@ -1,4 +1,7 @@
+" cat a file's contents chunk-by-chunk;
+" then we'll diff each chunk in f_in against the corresponding chunk in f_new
 function! DiffMarkCatFile(last_line, line, file)
+  "FIXME: force &shell=bash so that process substitution is guaranteed to be supported
   if a:last_line == a:line
     return "<(echo '')"
   else
@@ -25,13 +28,16 @@ function! DiffMarkImpl()
     let last_nr_in = 0
     let last_nr_new = 0
     let both_marks = []
+    "FIXME: no reason to nest these loops
     for mark_in in marks_in
       for mark_new in marks_new
         if mark_in.mark == mark_new.mark
           if mark_in.nr <= last_nr_in
+            "TODO throw an error?
             break
           endif
           if mark_new.nr <= last_nr_new
+            "TODO throw an error?
             break
           endif
           let last_nr_in = mark_in.nr
@@ -41,14 +47,23 @@ function! DiffMarkImpl()
         endif
       endfor
     endfor
+    "TODO: add an option to restrict the diff computation between the earliest and latest marked lines in both files
+    "      this would give us an easy way to ignore irrelevant diffs within massive files, e.g:
+    "      - mark line 9999 in f_in as 'a', line 10999 as 'b'
+    "      - mark line 99999 in f_new as 'a', line 100999 as 'b'
+    "      - DiffMark skips f_in lines 1-9998,11000-$ and f_new lines 1-99998,101000-$
     let last_nr_in = 0
     let last_nr_new = 0
     silent execute "!echo '' > " . v:fname_out
+    "COMBAK: would it be feasible to run these loop iterations in parallel and combine the results afterward?
     for marks in both_marks
       let linenr_in = marks.in.nr
       let linenr_new = marks.new.nr
       let f_in = DiffMarkCatFile(last_nr_in + 1, linenr_in, v:fname_in)
       let f_new = DiffMarkCatFile(last_nr_new + 1, linenr_new, v:fname_new)
+      " evil genius awk hack to match the chunk diff line numbers up with the original file
+      "TODO: split the diff operation into a separate shell script so we can do a single execute
+      "      (don't want to flash the screen multiple times)
       silent execute "!diff " . opt . f_in . " " . f_new .
             \ " | gawk -v off1=" . last_nr_in . " -v off2=" . last_nr_new . " '".
             \ "{ if (match($0, /^([0-9]+)(,([0-9]+))?([acd])([0-9]+)(,([0-9]+))?/, grp)) {" .
@@ -88,6 +103,7 @@ function! DiffMarkGather(mark_names)
     for mark in a:mark_names
       let nr = line("'" . mark)
       if nr == 0 || nr > line('$')
+        "TODO throw an error
         continue
       endif
       call add(marks, {"mark": mark, "nr": nr, "line": getline(nr)})
@@ -112,16 +128,17 @@ function! s:DiffMark(mark_args)
   let mark_names = []
   if len(a:mark_args) > 0
     let mark_names = deepcopy(a:mark_args)
+    "TODO print an error message when an invalid mark is specified
     call filter(mark_names, 'len(v:val) == 1')
   endif
+  "COMBAK: could we just assume that all lowercase marks are meant for anchoring?
+  "TODO: add a config variable to set the default mark names (or use all marks)
   if len(mark_names) == 0
     let mark_names = ['a']
   endif
   let orig_win = winnr()
   windo call DiffMarkGather(mark_names)
   execute orig_win . "wincmd w"
-  "echo g:diffmarks
-  "call getchar()
   diffupdate
   let &diffexpr = diffexpr_save
   redraw!
@@ -132,18 +149,19 @@ function! s:DiffSelf(mark_args)
   let mark_names_diff = []
 
   let apply_to_real = 1
-  for mark in a:mark_args
-    if len(mark) != 1
+  for arg_mark in a:mark_args
+    if len(arg_mark) != 1
+      "TODO print an error message when an invalid mark is specified
       continue
     endif
-    if mark == ","
+    if arg_mark == ","
       let apply_to_real = 0
       continue
     endif
     if apply_to_real
-      call add(mark_names_real, mark)
+      call add(mark_names_real, arg_mark)
     else
-      call add(mark_names_diff, mark)
+      call add(mark_names_diff, arg_mark)
     endif
   endfor
   if len(mark_names_real) == 0
@@ -166,6 +184,8 @@ function! s:DiffSelf(mark_args)
   let filetype = &ft
   let lines = getline(1, "$")
   vnew
+  "FIXME: remove the spare line at the beginning
+  "       could we just use :sav for all this?
   call append("$", lines)
   exe "setlocal bt=nofile bh=wipe nobl noswf ro ft=" . filetype
   exe "file " . expand("#") . ".DiffSelf"
@@ -184,12 +204,20 @@ function! s:DiffSelf(mark_args)
   call s:DiffMark(mark_names_real)
 endfunction
 
-func! s:MyRange(r, ...) range
-  echo "MyRange ". a:firstline . " " . a:lastline. " " . a:r
-  echo "0 " . a:0
-  echo "1 " . a:1
-endfunction
+" func! s:MyRange(r, ...) range
+"   echo "MyRange ". a:firstline . " " . a:lastline. " " . a:r
+"   echo "0 " . a:0
+"   echo "1 " . a:1
+" endfunction
+" com! -range MyRange <line1>,<line2>call s:MyRange(<range>, "help", 5)
 
+" update the active vimdiff windows so that the lines marked 'a' in each file are aligned
+" or, pass custom marks to use for alignment as follows:
+" :DiffMark a b c
 com! -narg=* DiffMark call s:DiffMark([<f-args>])
+" open a new temp file to compare 'a,'b to 'c,'d within the current buffer
+" or, pass custom region arguments as follows:
+" :DiffSelf a b , c d
+"TODO maybe change this for consistency with Vim syntax like so:
+" :DiffSelf 'a,'b 'c,'d
 com! -narg=* DiffSelf call s:DiffSelf([<f-args>])
-com! -range MyRange <line1>,<line2>call s:MyRange(<range>, "help", 5)
